@@ -1,0 +1,4 @@
+# 强制 LF：本机 core.autocrlf 为 true，不钉死的话 git 触碰即把行尾改成 CRLF。
+* text=auto eol=lf
+*.png binary
+*.jpg binary
