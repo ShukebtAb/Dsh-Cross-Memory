@@ -1,0 +1,19 @@
+# dsh-cross-memory bundle patch.
+#
+# Mounts one host-plane row. No client half: this plugin only reads a file and
+# contributes context, so it needs neither browser code nor a settings page.
+#
+# `inject` is deliberately explicit and defaults to false. The plugin does NOT
+# try to detect whether it is running on the "main" instance — that judgement
+# would need config-path or content heuristics, both of which rot. Instead the
+# operator states the intent per instance:
+#
+#   main instance        → keep `inject: false` (get cross_memory_status only)
+#   specialised instance → set `inject: true`  (receive all cross rules)
+#
+# Override by writing a SAME-ID row in the profile's own cordis.patch.yml.
+- insert:
+    - id: cross-memory
+      name: 'dsh-cross-memory'
+      config:
+        inject: false
