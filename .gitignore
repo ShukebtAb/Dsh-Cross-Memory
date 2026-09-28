@@ -1,0 +1,9 @@
+# 依赖与构建产物（本插件为纯 ESM，无构建链，但防误提交）
+node_modules/
+dist/
+
+# 日志与临时文件
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

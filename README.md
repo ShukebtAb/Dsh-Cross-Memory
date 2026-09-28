@@ -8,15 +8,15 @@
 
 ## 不用它行不行
 
-行，但有代价。把同样的 21 条写进各实例自己的用户级 `MEMORY.md` 时：
+行，但有代价。把同样的条目写进各实例自己的用户级 `MEMORY.md` 时（以下数字按本机当前的 22 条实测）：
 
 | 承载方式 | 每轮成本 | 错解否定 |
 |---|---|---|
-| **本插件全文注入** | **3529 字符** | ✅ 完整保留 |
-| 各实例写进 `MEMORY.md` | 4242 字符（21 条 × 202） | ❌ 被 200 字符渲染截断砍掉 |
+| **本插件全文注入** | **3786 字符** | ✅ 完整保留 |
+| 各实例写进 `MEMORY.md` | 4444 字符（22 条 × 202） | ❌ 被 200 字符渲染截断砍掉 |
 | `SKILL.md` 按需加载 | 0 | ✅ 完整，但**不带「必读」属性** |
 
-> 规则段每条只渲染「首条实质行前 200 字符 + `…`」（`rules-layer.js`），所以**长条目写进 `MEMORY.md` 注定被砍**。要完整保留错解否定，只能走插件注入。
+> 规则段每条只渲染「首条实质行前 200 字符 + `…`」（`rules-layer.js`），所以**长条目写进 `MEMORY.md` 注定被砍**。要完整保留错解否定，只能走插件注入。比值约 **0.85×**。
 
 ## 规则文件格式
 
@@ -35,7 +35,7 @@
 |---|---|
 | 生效区间 | **仅 `cross:begin` 与 `cross:end` 之间**；头部说明不注入 |
 | 行格式 | 以 `- ` 开头即一条；**不设标记词白名单**（白名单只会成为静默丢弃的来源） |
-| 单条长度 | ≤260 字符**全文注入、不截断** |
+| 单条长度 | **≤260 字符**（含 `- ` 前缀）**全文注入、不截断**。本机仅第 9 条为 265 字符——因须保留完整报错串作错解否定，是规则文件头部明确记载的唯一例外 |
 | 编码 | UTF-8 无 BOM、LF |
 
 ## 安装
@@ -48,9 +48,11 @@ dsh plugin --profile web add github:<owner>/dsh-cross-memory#<commit>
 dsh plugin --profile web add file:D:\Study\Product\dsh-cross-memory
 ```
 
+> 安装后须确认两处：`dependencies` 里出现该包、**`dsh.profile.bundles` 里也列出它**。少了后一步不会生效。
+
 ## ⚠ `inject` 开关：每个实例必须显式声明
 
-**插件不会猜自己是不是主实例**。内容指纹去重已实测不可行——`RULES.md` 是**重写版**而非摘抄版（措辞、语序、markdown 标记都动过），21 条里最多只有 5 条能与用户级 `MEMORY.md` 的前 60 字符对上；按路径判断又会随迁移失效。
+**插件不会猜自己是不是主实例**。内容指纹去重已实测不可行——`RULES.md` 是**重写版**而非摘抄版（措辞、语序、markdown 标记都动过），条目里最多只有少数能与用户级 `MEMORY.md` 的前 60 字符对上（实测：原方案 0/21，剥前缀后最好 5/21）；按路径判断又会随迁移失效。
 
 所以在该实例 profile 的 `cordis.patch.yml` 里显式声明：
 
@@ -70,22 +72,22 @@ dsh plugin --profile web add file:D:\Study\Product\dsh-cross-memory
 
 ## 工具：`cross_memory_status`
 
-输出 JSON：
+输出 JSON（示例为某次实跑结果）：
 
 ```json
 {
   "rulesPath": "C:\\Users\\Administrator\\.dsh\\memory\\cross\\RULES.md",
   "ok": true,
-  "sha256": "…",
-  "bytes": 8379,
+  "sha256": "5fe49f620d644261dc699f3512f0cb37c49d89d2641e4dea2980e2b9f24529d2",
+  "bytes": 8967,
   "mtimeMs": 1758…,
-  "itemsParsed": 21,
+  "itemsParsed": 22,
   "injectEnabled": false,
   "itemsInjected": 0
 }
 ```
 
-**用途**：`RULES.md` 目前**没有任何写保护**（`IsReadOnly = False`，DSH 本体的 `write`/`edit`/`pwsh` 都能直接覆写，唯一护栏是「不在工作区内」的路径隔离）。主实例可定期比对该 `sha256`，发现被误写即告警——这是「位置隔离 + SHA256 校验」加固方案中校验那一半的落地手段。
+**用途**：`RULES.md` 目前**没有任何写保护**（`IsReadOnly = False`，DSH 本体的 `write`/`edit`/`pwsh` 都能直接覆写，唯一护栏是「不在工作区内」的路径隔离）。主实例可定期比对该 `sha256`，发现被误写即告警——这是「位置隔离 + SHA256 校验」加固方案中**校验那一半**的落地手段。
 
 ## 行为细节
 
@@ -93,6 +95,7 @@ dsh plugin --profile web add file:D:\Study\Product\dsh-cross-memory
 - **缓存**：按 `mtimeMs` 缓存，文件未变不重复读盘。
 - **失败姿态**：文件缺失、读失败、锚点缺失一律**静默返回空串**（不注入、不报错、不影响会话）。
 - **不截断**：注入正文原样输出，`RULES.md` 的错解否定是刻意保留的设计。
+- **锚点匹配用完整注释串**：以 `indexOf('<!-- cross:begin -->')` 定位，而非裸的 `cross:begin`——因为头部说明的正文里会**字面出现** `cross:begin` / `cross:end` 这两个词，裸串匹配会误报。
 
 ## 许可
 
