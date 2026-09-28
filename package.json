@@ -1,12 +1,14 @@
 {
   "name": "dsh-cross-memory",
   "version": "0.1.0",
-  "description": "Inject cross-instance hard constraints (cross/RULES.md) into every turn — one rule source, all instances.",
+  "description": "Add-on for @a9i5k4/dsh-auto-memory: inject cross-instance hard constraints (cross/RULES.md) into every turn — one rule source, all instances.",
   "keywords": [
     "deepseek",
     "harness",
     "dsh",
     "dsh-plugin",
+    "dsh-auto-memory",
+    "addon",
     "memory",
     "cross-instance",
     "rules"
@@ -15,6 +17,14 @@
   "main": "index.js",
   "exports": {
     ".": "./index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ShukebtAb/Dsh-Cross-Memory.git"
+  },
+  "homepage": "https://github.com/ShukebtAb/Dsh-Cross-Memory#readme",
+  "bugs": {
+    "url": "https://github.com/ShukebtAb/Dsh-Cross-Memory/issues"
   },
   "files": [
     "index.js",

@@ -1,5 +1,12 @@
 # dsh-cross-memory bundle patch.
 #
+# Add-on for @a9i5k4/dsh-auto-memory — https://github.com/Aik358/dsh-auto-memory
+# It fills the gap left by that plugin's per-instance memory isolation: the rules
+# every instance must obey have no single source there. This plugin reads one
+# shared file from a fixed path and injects it through its own context channel.
+# It never imports auto-memory's code and never touches its data files, so the
+# two are independent at runtime.
+#
 # Mounts one host-plane row. No client half: this plugin only reads a file and
 # contributes context, so it needs neither browser code nor a settings page.
 #
