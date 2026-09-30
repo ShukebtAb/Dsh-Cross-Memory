@@ -28,6 +28,7 @@
   },
   "files": [
     "index.js",
+    "entry-format.js",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"

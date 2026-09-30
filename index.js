@@ -15,6 +15,7 @@ import { readFileSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { composeAppendEntry, inspectNoteFile } from './entry-format.js'
 
 export const name = 'dsh-cross-memory'
 export const inject = ['systemPrompt', 'tools']
@@ -80,6 +81,101 @@ function renderBody(r) {
   )
 }
 
+/**
+ * 结构化写入工具：把一条条目按「锚点 + ≤200 索引行 + 正文外移档案」写进工作区笔记。
+ * 拼装与校验全部走 `entry-format.js` 的纯函数（与影子验证脚本同一份逻辑）。
+ */
+function buildWriteEntryToolDef(fsCtx) {
+  return {
+    name: 'cross_memory_write_entry',
+    description:
+      '把一条结构化条目写进工作区记忆笔记：自动分配锚点行、校验索引行 ≤200 字符、把超长正文外移到 handoff 档案并在索引行里留短路径指针。' +
+      '默认预演（apply=false）只回改前/改后结构指标；apply=true 才落盘，落盘前强制生成 .pre-write-* 基线。' +
+      '写入前会 fail-closed 拒绝：锚点重复、保留语法污染（带空格的 <!-- memory:）、索引行超长、正文外移但指针不在索引行内。' +
+      '本工具不生成尾随空锚点 —— 那会被 auto-memory 的 parseAnchors 判 orphan-anchor 致整篇拒写。',
+    parameters: {
+      type: 'object',
+      properties: {
+        memoryFile: { type: 'string', description: '目标工作区 MEMORY.md 的绝对路径' },
+        title: { type: 'string', description: '条目标题（不带 # 前缀）' },
+        indexLine: { type: 'string', description: '条目索引行；注入面只取它的前 200 字符，须自包含结论' },
+        body: { type: 'string', description: '超长正文；给了就会外移到档案，此时 indexLine 内必须含该档案的短路径指针' },
+        archivePath: { type: 'string', description: '档案绝对路径；body 非空时必填' },
+        apply: { type: 'boolean', description: 'false（缺省）= 只预演；true = 真正落盘' },
+      },
+      required: ['memoryFile', 'title', 'indexLine'],
+    },
+    output: {
+      schema: { type: 'string' },
+      render(_args, value) {
+        return [{ type: 'text', text: String(value) }]
+      },
+    },
+    async execute(args) {
+      const memoryFile = String(args?.memoryFile || '')
+      if (!memoryFile) return JSON.stringify({ ok: false, reason: 'memory-file-required' }, null, 2)
+
+      let currentText
+      try {
+        currentText = readFileSync(memoryFile, 'utf8')
+      } catch (e) {
+        return JSON.stringify({ ok: false, reason: 'read-failed: ' + (e && e.message ? e.message : String(e)) }, null, 2)
+      }
+
+      const archivePath = args?.archivePath ? String(args.archivePath) : ''
+      const composed = composeAppendEntry({
+        fileText: currentText,
+        title: args?.title,
+        indexLine: args?.indexLine,
+        bodyText: args?.body,
+        archiveRelPath: archivePath ? 'handoff/' + archivePath.split(/[\\/]/).pop() : '',
+      })
+      if (!composed.ok) {
+        return JSON.stringify({ ok: false, blocked: true, reasons: composed.reasons }, null, 2)
+      }
+
+      const report = {
+        memoryId: composed.memoryId,
+        warnings: composed.warnings,
+        before: inspectNoteFile(currentText),
+        after: inspectNoteFile(composed.noteText),
+      }
+
+      if (args?.apply !== true) {
+        return JSON.stringify({ ok: true, dryRun: true, ...report }, null, 2)
+      }
+
+      const stampText = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-')
+      const baselinePath = memoryFile + '.pre-write-' + stampText
+      try {
+        await fsCtx.fs.writeText(await fsCtx.fs.resolve(baselinePath), currentText)
+        if (composed.archiveAppend && archivePath) {
+          let existing = ''
+          try {
+            existing = readFileSync(archivePath, 'utf8')
+          } catch {
+            existing = ''
+          }
+          await fsCtx.fs.writeText(await fsCtx.fs.resolve(archivePath), existing + composed.archiveAppend)
+        }
+        await fsCtx.fs.writeText(await fsCtx.fs.resolve(memoryFile), composed.noteText)
+      } catch (e) {
+        return JSON.stringify(
+          { ok: false, reason: 'write-failed: ' + (e && e.message ? e.message : String(e)), ...report },
+          null,
+          2
+        )
+      }
+
+      return JSON.stringify(
+        { ok: true, applied: true, baselinePath, archivePath: archivePath || null, ...report },
+        null,
+        2
+      )
+    },
+  }
+}
+
 export function apply(ctx, config) {
   const enabled = config?.inject === true
   const disposers = []
@@ -135,6 +231,11 @@ export function apply(ctx, config) {
       },
     })
   )
+
+  // 结构化写入：可选依赖 —— 宿主没挂 fs 后端时不注册该工具，本插件其余功能照常。
+  ctx.inject(['fs'], (fsCtx) => {
+    disposers.push(fsCtx.tools.register(buildWriteEntryToolDef(fsCtx)))
+  })
 
   return () => {
     for (const d of disposers) {
