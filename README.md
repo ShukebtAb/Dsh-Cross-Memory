@@ -1,9 +1,10 @@
 # dsh-cross-memory
 
 > **这是 [`@a9i5k4/dsh-auto-memory`](https://github.com/Aik358/dsh-auto-memory) 的增量插件（add-on）**，不是替代品。
-> 它不改动 auto-memory 的任何代码或数据，只是在旁边追加一条「跨实例规则」注入通道。
+> 它不改动 auto-memory 的任何代码或数据，只是在旁边**追加一条「跨实例规则」注入通道**，并提供一个**符合其锚点契约的结构化写入工具**。
 
 把**跨实例硬约束**注入每一轮上下文：一份规则文件（`cross/RULES.md`），全部实例共同遵守。
+另提供**结构化写入工具** `cross_memory_write_entry`，把「写一条记忆条目」固化成一次带校验与基线的工具调用（见下文〈结构化写入〉章节）。
 
 ## 它解决什么
 
@@ -93,6 +94,43 @@ dsh plugin --profile web add file:D:\Study\Product\dsh-cross-memory
 ```
 
 **用途**：`RULES.md` 目前**没有任何写保护**（`IsReadOnly = False`，DSH 本体的 `write`/`edit`/`pwsh` 都能直接覆写，唯一护栏是「不在工作区内」的路径隔离）。主实例可定期比对该 `sha256`，发现被误写即告警——这是「位置隔离 + SHA256 校验」加固方案中**校验那一半**的落地手段。
+
+## 结构化写入：`cross_memory_write_entry`（0.2.0 新增）
+
+把「手工编辑记忆条目」这件事固化成一次工具调用。手工编辑最容易踩的坑，这里都用机制挡住。
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `memoryFile` | string | 目标工作区 `MEMORY.md` 的**绝对路径**（必填） |
+| `title` | string | 条目标题（不带 `#` 前缀，必填） |
+| `indexLine` | string | 条目索引行；**注入面只取它的前 200 字符**，须自包含结论（必填） |
+| `body` | string | 超长正文；给了就外移到档案，此时 `indexLine` 内**必须**含该档案的短路径指针 |
+| `archivePath` | string | 档案绝对路径；`body` 非空时必填 |
+| `apply` | boolean | `false`（缺省）= 只预演；`true` = 真正落盘 |
+
+**三条硬契约**
+
+1. **不生成尾随空锚点。** auto-memory 的 `parseAnchors` → `finalizeAnchored()` 在锚点之后到下一锚点之间找不到任何非空行时判 `orphan-anchor` ⇒ 该文件此后**永久整篇 fail-closed 拒写**。本工具一律不生成。反过来，手工 `edit` 时「末尾追加锚点 + 条目 + 尾随空锚点」会让文件永久拒写 —— 这是本工具存在的主要理由。
+2. **索引行 ≤200 字符。** 超出即拒，回执给实际长度（形如 `index-line-too-long:213>200`）。正文外移时，档案短路径指针**必须落在索引行内**，否则条目外移后不可达。
+3. **写前留基线、写后给结构指标。** 落盘前强制生成 `<memoryFile>.pre-write-<stamp>`；回执给 `before` / `after` 的 chars / bytes / lines / anchors / duplicateAnchors / reservedSyntaxHits。
+
+**用法（预演 → 落盘）**
+
+先调一次看结构指标（`apply` 缺省即预演，零风险）：
+
+```js
+cross_memory_write_entry(
+  memoryFile  = '<工作区绝对路径>\\MEMORY.md',
+  title       = '实例盘点判据与静默漏报坑（2026-10-01 实测）',
+  indexLine   = '结论：……见 handoff/archive-inject盘点.md',
+  body        = '<超长正文>',
+  archivePath = '<工作区绝对路径>\\handoff\\archive-inject盘点.md'
+)   // → ok:true / dryRun:true，anchors 10 → 11
+```
+
+确认无 `duplicateAnchors`、无 `reservedSyntaxHits` 之后，加 `apply = true` 落盘，回执会多出 `baselinePath` 与 `archivePath`。
+
+> **为什么不用 `memory_note(append)` 手写条目**：它不带锚点，会被并入最后一条 entry，只渲染该条首行 ⇒ **静默不进注入面**，还实占容量。这是本工具存在的第二个理由。
 
 ## 行为细节
 

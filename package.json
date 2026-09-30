@@ -1,7 +1,7 @@
 {
   "name": "dsh-cross-memory",
-  "version": "0.1.0",
-  "description": "Add-on for @a9i5k4/dsh-auto-memory: inject cross-instance hard constraints (cross/RULES.md) into every turn — one rule source, all instances.",
+  "version": "0.2.0",
+  "description": "@a9i5k4/dsh-auto-memory 的增量插件：①把跨实例硬约束（cross/RULES.md）全文注入每一轮上下文，改一处即全部实例生效；②提供结构化写入工具 cross_memory_write_entry（自动锚点行、≤200 字符索引行校验、超长正文外移、写前留基线）。",
   "keywords": [
     "deepseek",
     "harness",
