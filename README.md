@@ -101,11 +101,12 @@ dsh plugin --profile web add file:D:\Study\Product\dsh-cross-memory
 
 | 参数 | 类型 | 说明 |
 |---|---|---|
-| `memoryFile` | string | 目标工作区 `MEMORY.md` 的**绝对路径**（必填） |
+| `scope` | string | `'workspace'`（缺省）写工作区笔记；`'user'` 写用户级 `~/.dsh/memory/MEMORY.md` |
+| `memoryFile` | string | 目标工作区 `MEMORY.md` 的**绝对路径**（`scope='workspace'` 时必填；`'user'` 时忽略） |
 | `title` | string | 条目标题（不带 `#` 前缀，必填） |
 | `indexLine` | string | 条目索引行；**注入面只取它的前 200 字符**，须自包含结论（必填） |
 | `body` | string | 超长正文；给了就外移到档案，此时 `indexLine` 内**必须**含该档案的短路径指针 |
-| `archivePath` | string | 档案绝对路径；`body` 非空时必填 |
+| `archivePath` | string | 档案绝对路径；`body` 非空时必填（**`scope='user'` 时禁用** —— 用户级无 `handoff/` 落点） |
 | `apply` | boolean | `false`（缺省）= 只预演；`true` = 真正落盘 |
 
 **三条硬契约**
@@ -130,7 +131,29 @@ cross_memory_write_entry(
 
 确认无 `duplicateAnchors`、无 `reservedSyntaxHits` 之后，加 `apply = true` 落盘，回执会多出 `baselinePath` 与 `archivePath`。
 
-> **为什么不用 `memory_note(append)` 手写条目**：它不带锚点，会被并入最后一条 entry，只渲染该条首行 ⇒ **静默不进注入面**，还实占容量。这是本工具存在的第二个理由。
+> **为什么不用 `memory_note(append)` 手工写条目**（⚠ **只在 `memoryAnchorEnabled=false` 时成立，而这是默认值**）：它不带锚点，会被并入最后一条 entry、只渲染该条首行 ⇒ **静默不进注入面**，还实占容量。**该键为 `true` 时本句不再成立** —— 本体自己就会产锚点，见下一节。
+
+## 与本体原生写入的分工（0.3.0 新增）
+
+`@a9i5k4/dsh-auto-memory` 有一个配置键 **`memoryAnchorEnabled`（默认 `false`）**，它决定**本体的原生写入是否自带锚点**：
+
+| 该键 | `memory_note(append)` / `memory_user(append)` | 本工具 `cross_memory_write_entry` |
+|---|---|---|
+| **`false`**（默认） | 产**裸条**（无锚点）⇒ 被并入上一条、只渲染该条首行，**零注入贡献** | **不可替代** —— 这正是它最初的存在理由 |
+| **`true`** | **自动分配 memoryId 并写出 `<!-- memory:mem_<32hex> -->`** ⇒ 正常进注入面 | 仍有独特价值，见下 |
+
+> **实测调用链**（`true` 时）：`lib/index.js:14155`（用户级 append）→ `:7365` 取 `this.docStore` → `:7346-7347`「**仅 `memoryAnchorEnabled === true` 时创建**」→ `lib/memory-writer.js:510` `memoryId = this.idFactory()` → `:135` 写出锚点块。作者契约 `docs/M3B-CONTRACT.md:427` 亦载「`memoryAnchorEnabled=true` 已在线上开启」。
+
+**`true` 时本工具仍独有的能力（本体没有的）**
+
+1. **写任意路径的 `MEMORY.md`** —— 本体 `memory_note` 只写**当前工作区**笔记（落点由 `wsKey` 定）、`memory_user` 只写用户级；本工具的 `memoryFile` 接受任意绝对路径（可写别的工作区或隔离落点的笔记）。
+2. **索引行 ≤200 硬校验** —— 本体不校验；超长会在注入面被**静默截断**（规则层每条只渲染首行前 200 字符）。
+3. **约束词 warning** —— 提前告知该条会不会进规则段（不含约束语汇者只进 Tier-0 目录）。
+4. **正文外移 + 档案指针** —— 本体没有这个机制。
+5. **`apply:false` 预演** —— 先看 `before`/`after` 结构指标再决定是否落盘；本体是写入即落盘。
+6. **写前强制基线**（`.pre-write-*`）与**裸条三分类 fail-closed 校验**（保留语法污染 / 锚点重复 / 尾随空锚点）。
+
+**错解否定**：别把「本体开了 `memoryAnchorEnabled`」理解成「本工具可以扔了」—— 上面 6 条在 `true` 实例上同样成立；反过来，也**别**因为有本工具的校验就把本体写入晾在一边：**同路径、同形态的写入，优先用本体**（它还会顺带做容量治理与 Tier-0 索引，本工具不管这些）。
 
 ## 行为细节
 
