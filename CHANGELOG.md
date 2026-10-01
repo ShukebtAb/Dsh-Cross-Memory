@@ -3,42 +3,36 @@
 本文件记录 `dsh-cross-memory` 的版本变更。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [0.3.0] - 2026-10-01
+## [0.4.0] - 2026-10-01
+
+### 公开能力收敛（本版的主题）
+
+本插件是 auto-memory 的**增量插件**，因此只公开**本体没有的**能力。本版据此重新划定了公开边界：
+
+| 公开能力 | 为什么它是互补的 |
+|---|---|
+| **跨实例硬约束注入** | auto-memory 的用户级记忆**按实例隔离**（`userMemoryDir` 指向各自 `DSH_HOME`）⇒「所有实例都必须遵守的约束」在它那里没有统一来源 |
+| **锚点结构修复 `cross_memory_fix_bare_entries`** | auto-memory **没有**任何锚点结构修复通路；且其中的**空锚点 orphan** 与**重复锚点**两类病灶与任何配置开关无关（手工编辑、跨会话并发写入、历史遗留都会产生） |
+| `cross_memory_status` | 报告 `cross/RULES.md` 的状态（路径/SHA256/字节/条目数/本实例注入状态）；`memory_status` 报的是记忆库自身，**不含该文件** |
 
 ### 新增
 
-- **结构化写入支持用户级落点**（commit `b1396f2`）：新增 `scope` 参数 —— `'workspace'`（缺省）写工作区笔记；`'user'` 写用户级 `~/.dsh/memory/MEMORY.md`。用户级落点**禁用正文外移**（该落点没有 `handoff/`，给它造一个就违反「不引入新的记忆落点」），带 `body`/`archivePath` 时 fail-closed 拒绝。
-- **裸条检出与修复工具 `cross_memory_fix_bare_entries`**（commit `1677f7e`，第 3 个工具）：检出并修复三类病灶 —— **A 无锚点裸条**（在 `## ` 行前插锚点行）／**B 空锚点 orphan**（在锚点行后补中性占位行）／**C 重复锚点**（只报不改）。**只插入新行、绝不改动既有行**；`apply=true` 时先留 `.pre-write-*` 基线、写后自检、不 clean 即回滚。
-- `README.md` 新增〈与本体原生写入的分工〉：`memoryAnchorEnabled` 的 true/false 对照表、实测调用链、本工具在 `true` 时仍独有的 6 项能力。
-- `README.md` 的〈结构化写入〉参数表补 `scope`（0.2.0 的代码引入、本版补进文档）与 `memoryFile` 的条件说明。
+- 将 **`cross_memory_fix_bare_entries`** 确立为公开能力，并在 README 中独立成章（三类病灶对照表、为什么 B/C 两类长期有用、参数、两条硬保证、用法与幂等性）：
+  - **A 无锚点裸条** ⇒ 在 `## ` 行**之前**插锚点行
+  - **B 空锚点 orphan**（致该文件**整篇 fail-closed 拒写**）⇒ 在锚点行**之后**补一行中性占位
+  - **C 重复锚点** ⇒ **只报不改**（删哪个 id 属语义判断）
+  - **只插入新行、绝不改动既有行**；`apply=true` 时先留 `.pre-write-*` 基线、写后自检、不干净即整份回滚
 
-### 修订
+### 调整
 
-- **把「为什么不用 `memory_note(append)`」由绝对句改为条件句**。原句「它不带锚点」是**条件事实**，只在 `memoryAnchorEnabled=false`（默认值）时成立；该键为 `true` 时，本体原生 append 通路**自己会分配 memoryId 并写出锚点**（`lib/index.js:14155 → :7365 → :7346-7347 → lib/memory-writer.js:510 → :135`）。原写法容易让人误以为「本体的追加永远不能进注入面」。
-
-### 说明
-
-- **本版 `index.js` / `entry-format.js` 逐字节未变**（仍是 `b1396f2` + `1677f7e` 两轮的代码）。本版是**文档发布**，同时把 0.2.0 之后两次未发 Release 的代码变更（`scope=user` 双落点、裸条检出与修复）一并纳入 `v0.3.0` 这个坐标。
-
-## [0.2.0] - 2026-10-01
-
-### 新增
-
-- **结构化写入工具 `cross_memory_write_entry`** —— 把「手工编辑记忆条目」这件容易踩坑的事固化成一次工具调用：
-  - 自动分配锚点行（`<!-- memory:mem_<32hex> -->`），不再依赖人手写对
-  - 校验索引行 ≤200 字符，超长即拒并附实际长度（实测回执形如 `index-line-too-long:213>200`）
-  - 索引行 200 字符的硬边界来自 auto-memory 的注入面实现：规则层每条只渲染首行前 200 字符
-  - `body` 非空时把正文外移到 `handoff/archive-*.md`，并要求短路径指针落在索引行内
-  - 落盘前强制生成 `.pre-write-<stamp>` 基线，写失败可逐字节回滚
-  - `apply: false` 只预演（返回改前／改后结构指标），`apply: true` 才落盘
-  - **一律不生成尾随空锚点** —— 那会被 auto-memory 的 `parseAnchors` 判 `orphan-anchor`，致该文件此后整篇 fail-closed 拒写
-- `README.md` 新增「结构化写入」章节：六参数表、三条硬契约、预演→落盘流程
-- `package.json` 的 `description` 覆盖两条能力（此前只描述跨实例注入）
+- **README 收敛**：只描述与本体互补的能力。此前版本中围绕「结构化写入」的整章（参数表、三条硬契约、预演→落盘流程、与本体原生写入的分工）**已整体移除**——该工具建立在一条**未采用**的实现路径之上（其立身理由只在 `memoryAnchorEnabled=false` 时成立，而该键为 `true` 时本体原生写入自带锚点），不构成公开能力。
+- `package.json` 的 `description` 同步收敛为两项公开能力。
 
 ### 说明
 
-- **不改变既有行为**：`index.js` 的注入通道、`order`、缓存、失败姿态与 `cross_memory_status` 输出全部未变，本轮只新增一个工具。
-- 开发／验证工具 `tools\shadow-verify.mjs` 仍不入包（`files` 白名单未变）。
+- **代码零改动**：`index.js` / `entry-format.js` 逐字节未变。本版是**文档与定位的收敛**，不改变任何运行时行为。
+- **版本号不做连续性声明**：`0.2.0` 与 `0.3.0` 两个版本围绕上述那条未采用的路径，其 GitHub Release 与 tag **已下架**，本文件不再收录其条目。需要回溯代码时请用 commit（`64d78be` / `89c34b2`）——git 历史完整保留。
+- `files` 白名单未变（`index.js` + `entry-format.js` + `cordis.patch.yml` + `README.md` + `LICENSE`）；开发／验证工具 `tools\` 仍不入包。
 
 ## [0.1.0] - 2026-09-28
 
@@ -50,6 +44,5 @@
 - 工具 `cross_memory_status`：输出规则文件路径、SHA256、字节数、mtime、解析出的条目数与本实例注入状态。
 - 注入通道为 `systemPrompt.context()`（`order: 10001`，排在 auto-memory 的 `SECTION_ORDER = 10000` 之后），不击穿 DeepSeek 前缀缓存。
 
-[0.3.0]: https://github.com/ShukebtAb/Dsh-Cross-Memory/releases/tag/v0.3.0
-[0.2.0]: https://github.com/ShukebtAb/Dsh-Cross-Memory/releases/tag/v0.2.0
+[0.4.0]: https://github.com/ShukebtAb/Dsh-Cross-Memory/releases/tag/v0.4.0
 [0.1.0]: https://github.com/ShukebtAb/Dsh-Cross-Memory/commit/9c71de0

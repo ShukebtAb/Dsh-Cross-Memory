@@ -1,10 +1,8 @@
 # dsh-cross-memory
 
 > **这是 [`@a9i5k4/dsh-auto-memory`](https://github.com/Aik358/dsh-auto-memory) 的增量插件（add-on）**，不是替代品。
-> 它不改动 auto-memory 的任何代码或数据，只是在旁边**追加一条「跨实例规则」注入通道**，并提供一个**符合其锚点契约的结构化写入工具**。
-
-把**跨实例硬约束**注入每一轮上下文：一份规则文件（`cross/RULES.md`），全部实例共同遵守。
-另提供**结构化写入工具** `cross_memory_write_entry`，把「写一条记忆条目」固化成一次带校验与基线的工具调用（见下文〈结构化写入〉章节）。
+> 它不改动 auto-memory 的任何代码或数据，只做**本体没有的两件事**：
+> **① 跨实例硬约束注入**（一份规则文件，全部实例共同遵守）；**② 记忆文件的锚点结构修复**（本体没有修复通路）。
 
 ## 它解决什么
 
@@ -47,8 +45,8 @@
 ## 安装
 
 ```powershell
-# 从 GitHub（推荐，锁定 commit 可复现）
-dsh plugin --profile web add github:ShukebtAb/Dsh-Cross-Memory#<commit>
+# 从 GitHub（推荐，锁定 commit/tag 可复现）
+dsh plugin --profile web add github:ShukebtAb/Dsh-Cross-Memory#v0.4.0
 
 # 本地开发期
 dsh plugin --profile web add file:D:\Study\Product\dsh-cross-memory
@@ -71,12 +69,12 @@ dsh plugin --profile web add file:D:\Study\Product\dsh-cross-memory
 
 | 实例角色 | 配置 | 效果 |
 |---|---|---|
-| **主实例**（规则段本就是真源） | `inject: false`（缺省） | 不注入；仅获得 `cross_memory_status` 工具 |
+| **主实例**（规则段本就是真源） | `inject: false`（缺省） | 不注入；仅获得两个工具 |
 | **特化子实例** | `inject: true` | 注入全部条目 |
 
-**为什么主实例也建议装**：为了 `cross_memory_status` 工具——见下节。
+**为什么主实例也建议装**：为了那两个工具——见下两节。
 
-## 工具：`cross_memory_status`
+## 工具 ①：`cross_memory_status`
 
 输出 JSON（示例为某次实跑结果）：
 
@@ -95,65 +93,56 @@ dsh plugin --profile web add file:D:\Study\Product\dsh-cross-memory
 
 **用途**：`RULES.md` 目前**没有任何写保护**（`IsReadOnly = False`，DSH 本体的 `write`/`edit`/`pwsh` 都能直接覆写，唯一护栏是「不在工作区内」的路径隔离）。主实例可定期比对该 `sha256`，发现被误写即告警——这是「位置隔离 + SHA256 校验」加固方案中**校验那一半**的落地手段。
 
-## 结构化写入：`cross_memory_write_entry`（0.2.0 新增）
+> **本体没有对应物**：auto-memory 的 `memory_status` 报告的是记忆库自身（各文件大小、日志条数、待反思等），**不含 `cross/RULES.md`**——那个路径在它的视野之外。
 
-把「手工编辑记忆条目」这件事固化成一次工具调用。手工编辑最容易踩的坑，这里都用机制挡住。
+## 工具 ②：`cross_memory_fix_bare_entries` —— 锚点结构修复
+
+**这是本插件第二项公开能力，也是 auto-memory 本体完全没有的一块**：本体没有任何「修复记忆文件锚点结构」的工具。
+
+锚点行是 auto-memory 的**唯一条目分隔符**（`<!-- memory:mem_<32hex> -->`）。结构一旦坏掉，后果不是"少一条记忆"，而是**该文件整篇 fail-closed 拒写**或**新内容静默不进注入面**。本工具把这件事做成一条命令。
+
+### 它修的三类病灶
+
+| 类 | 病灶 | 成因 | 处置 |
+|---|---|---|---|
+| **A** | **无锚点裸条** | `memoryAnchorEnabled=false`（默认值）时 `append` 通路的产物：条目挂在文件里，却既不是独立记录、也不单独进注入面 | 在 `## ` 行**之前**插入锚点行 |
+| **B** | **空锚点 orphan** | 锚点之后到下一锚点之间**没有任何非空行** ⇒ `parseAnchors` 判 `orphan-anchor` ⇒ **整篇永久 fail-closed 拒写** | 在锚点行**之后**补一行中性占位 |
+| **C** | **重复锚点** | 同一 `mem_<32hex>` 在文件里出现多次（多会话并发写入、手工复制段落） | **只报不改**（删哪个 id 属语义判断，交人） |
+
+### ⚠ 为什么它长期有用：B / C 两类与 `memoryAnchorEnabled` 无关
+
+这是本工具**不是**过渡方案的原因：
+
+- **A 类**确实只在一个开关为 `false` 时产生（那个开关一旦开启，原生写入自己就会产锚点）；
+- 但 **B 类空锚点与 C 类重复锚点的成因与那个开关无关** —— 手工编辑记忆文件、跨会话并发写入、复制粘贴段落、历史遗留文件，**任何一种都会产生**它们；而它们的后果（整篇拒写）与开关状态无关。
+- 只要 auto-memory 用锚点行做条目分隔符，这两类病灶就会存在；而本体**没有**任何修复通路（UI 的「语料健康 / 修复 stale」走的是另一条线，修的是 sidecar 索引与正文的 digest 失配，**不是**结构病灶）。
+
+### 参数
 
 | 参数 | 类型 | 说明 |
 |---|---|---|
-| `scope` | string | `'workspace'`（缺省）写工作区笔记；`'user'` 写用户级 `~/.dsh/memory/MEMORY.md` |
-| `memoryFile` | string | 目标工作区 `MEMORY.md` 的**绝对路径**（`scope='workspace'` 时必填；`'user'` 时忽略） |
-| `title` | string | 条目标题（不带 `#` 前缀，必填） |
-| `indexLine` | string | 条目索引行；**注入面只取它的前 200 字符**，须自包含结论（必填） |
-| `body` | string | 超长正文；给了就外移到档案，此时 `indexLine` 内**必须**含该档案的短路径指针 |
-| `archivePath` | string | 档案绝对路径；`body` 非空时必填（**`scope='user'` 时禁用** —— 用户级无 `handoff/` 落点） |
-| `apply` | boolean | `false`（缺省）= 只预演；`true` = 真正落盘 |
+| `scope` | string | `'workspace'`（缺省）修工作区笔记；`'user'` 修用户级 `~/.dsh/memory/MEMORY.md` |
+| `memoryFile` | string | 目标 `MEMORY.md` 的**绝对路径**（`scope='workspace'` 时必填） |
+| `apply` | boolean | `false`（缺省）= **只报方案、一个字节都不写**；`true` = 落盘 |
 
-**三条硬契约**
+### 两条硬保证
 
-1. **不生成尾随空锚点。** auto-memory 的 `parseAnchors` → `finalizeAnchored()` 在锚点之后到下一锚点之间找不到任何非空行时判 `orphan-anchor` ⇒ 该文件此后**永久整篇 fail-closed 拒写**。本工具一律不生成。反过来，手工 `edit` 时「末尾追加锚点 + 条目 + 尾随空锚点」会让文件永久拒写 —— 这是本工具存在的主要理由。
-2. **索引行 ≤200 字符。** 超出即拒，回执给实际长度（形如 `index-line-too-long:213>200`）。正文外移时，档案短路径指针**必须落在索引行内**，否则条目外移后不可达。
-3. **写前留基线、写后给结构指标。** 落盘前强制生成 `<memoryFile>.pre-write-<stamp>`；回执给 `before` / `after` 的 chars / bytes / lines / anchors / duplicateAnchors / reservedSyntaxHits。
+1. **只插入新行，绝不改动既有行。** 判据是机械的：把锚点行过滤掉之后**逐行比对差异必须为 0**。所以它不会改你的措辞、不会重排内容、不会"顺手优化"。
+2. **`apply=true` 时：先留基线 → 写后自检 → 不干净即回滚。** 落盘前生成 `.pre-write-<stamp>`；写后重跑诊断，若 A/B 类仍存在则**从基线整份回滚**并如实回报 `rolledBack: true`。
 
-**用法（预演 → 落盘）**
+### 用法
 
-先调一次看结构指标（`apply` 缺省即预演，零风险）：
+```
+cross_memory_fix_bare_entries(
+  scope      = 'workspace',
+  memoryFile = '<工作区绝对路径>\MEMORY.md'
+)                      // → 只报方案：changed? / A、B、C 各几处 / 每处插在第几行
 
-```js
-cross_memory_write_entry(
-  memoryFile  = '<工作区绝对路径>\\MEMORY.md',
-  title       = '实例盘点判据与静默漏报坑（2026-10-01 实测）',
-  indexLine   = '结论：……见 handoff/archive-inject盘点.md',
-  body        = '<超长正文>',
-  archivePath = '<工作区绝对路径>\\handoff\\archive-inject盘点.md'
-)   // → ok:true / dryRun:true，anchors 10 → 11
+# 确认无误后
+cross_memory_fix_bare_entries(..., apply = true)
 ```
 
-确认无 `duplicateAnchors`、无 `reservedSyntaxHits` 之后，加 `apply = true` 落盘，回执会多出 `baselinePath` 与 `archivePath`。
-
-> **为什么不用 `memory_note(append)` 手工写条目**（⚠ **只在 `memoryAnchorEnabled=false` 时成立，而这是默认值**）：它不带锚点，会被并入最后一条 entry、只渲染该条首行 ⇒ **静默不进注入面**，还实占容量。**该键为 `true` 时本句不再成立** —— 本体自己就会产锚点，见下一节。
-
-## 与本体原生写入的分工（0.3.0 新增）
-
-`@a9i5k4/dsh-auto-memory` 有一个配置键 **`memoryAnchorEnabled`（默认 `false`）**，它决定**本体的原生写入是否自带锚点**：
-
-| 该键 | `memory_note(append)` / `memory_user(append)` | 本工具 `cross_memory_write_entry` |
-|---|---|---|
-| **`false`**（默认） | 产**裸条**（无锚点）⇒ 被并入上一条、只渲染该条首行，**零注入贡献** | **不可替代** —— 这正是它最初的存在理由 |
-| **`true`** | **自动分配 memoryId 并写出 `<!-- memory:mem_<32hex> -->`** ⇒ 正常进注入面 | 仍有独特价值，见下 |
-
-> **实测调用链**（`true` 时）：`lib/index.js:14155`（用户级 append）→ `:7365` 取 `this.docStore` → `:7346-7347`「**仅 `memoryAnchorEnabled === true` 时创建**」→ `lib/memory-writer.js:510` `memoryId = this.idFactory()` → `:135` 写出锚点块。作者契约 `docs/M3B-CONTRACT.md:427` 亦载「`memoryAnchorEnabled=true` 已在线上开启」。
-
-**`true` 时本工具仍独有的能力（本体没有的）**
-
-1. **写任意路径的 `MEMORY.md`** —— 本体 `memory_note` 只写**当前工作区**笔记（落点由 `wsKey` 定）、`memory_user` 只写用户级；本工具的 `memoryFile` 接受任意绝对路径（可写别的工作区或隔离落点的笔记）。
-2. **索引行 ≤200 硬校验** —— 本体不校验；超长会在注入面被**静默截断**（规则层每条只渲染首行前 200 字符）。
-3. **约束词 warning** —— 提前告知该条会不会进规则段（不含约束语汇者只进 Tier-0 目录）。
-4. **正文外移 + 档案指针** —— 本体没有这个机制。
-5. **`apply:false` 预演** —— 先看 `before`/`after` 结构指标再决定是否落盘；本体是写入即落盘。
-6. **写前强制基线**（`.pre-write-*`）与**裸条三分类 fail-closed 校验**（保留语法污染 / 锚点重复 / 尾随空锚点）。
-
-**错解否定**：别把「本体开了 `memoryAnchorEnabled`」理解成「本工具可以扔了」—— 上面 6 条在 `true` 实例上同样成立；反过来，也**别**因为有本工具的校验就把本体写入晾在一边：**同路径、同形态的写入，优先用本体**（它还会顺带做容量治理与 Tier-0 索引，本工具不管这些）。
+**幂等**：对同一文件重复执行，第二次返回 `changed: false`、不写盘（确定性 id 由「scope + 文件名 + 该块首条实质内容行」派生）。
 
 ## 行为细节
 
@@ -172,15 +161,15 @@ cross_memory_write_entry(
 |---|---|
 | 名称 | `@a9i5k4/dsh-auto-memory` |
 | 仓库 | **https://github.com/Aik358/dsh-auto-memory** |
-| 参考版本 | 3.1.7 |
+| 参考版本 | 3.2.5 |
 | 许可 | BSD-3-Clause |
 | 简介（原文） | Proactive associative memory for DSH: zero-prompt recall injected before the model speaks, three-layer auto-consolidation, skill crystallization, and Astra-style context management - handoff ledgers, PLAN whiteboard, water-level sensing. Local-first, model-agnostic, zero deps. 主动联想记忆+Astra 式上下文管理:自动唤回/自动沉淀/技能固化/交接账本与白板跨窗口续命/水位感知。 |
 
 **两者关系说明**：
 
 - **它做什么**：DSH 的记忆系统本体——主动联想记忆、三层自动沉淀、技能固化、交接账本与 PLAN 白板、水位感知。
-- **本插件补什么**：它按实例隔离用户级记忆（`userMemoryDir`），因而「所有实例都必须遵守的约束」缺少统一来源；本插件用固定共享路径 + 独立注入通道补上这一点。
-- **互不调用**：本插件**不 import 它的代码、不读写它的数据文件、不依赖它的运行状态**；auto-memory 未安装时本插件照常工作（只是不再有那个缺口需要补）。
+- **本插件补什么**：①它按实例隔离用户级记忆（`userMemoryDir`），因而「所有实例都必须遵守的约束」缺少统一来源；②它没有锚点结构修复通路。这两点就是本插件的全部公开能力。
+- **互不调用**：本插件**不 import 它的代码、不读写它的数据文件、不依赖它的运行状态**；auto-memory 未安装时本插件的注入照常工作（只是不再有那个缺口需要补）。
 - **契约借用**：本插件沿用了它的两条工程约定作为设计参考——「注入走 `systemPrompt.context()` 而非 `section()`」，以及「注入段用 `order` 排序」。这些是 DSH 平台的机制，非 auto-memory 私有 API。
 
 ## 许可

@@ -1,7 +1,7 @@
 {
   "name": "dsh-cross-memory",
-  "version": "0.3.0",
-  "description": "@a9i5k4/dsh-auto-memory 的增量插件：①把跨实例硬约束（cross/RULES.md）全文注入每一轮上下文，改一处即全部实例生效；②结构化写入工具 cross_memory_write_entry（自动锚点行、≤200 字符索引行校验、超长正文外移、写前留基线、工作区/用户级双落点）；③裸条检出与修复工具 cross_memory_fix_bare_entries（无锚点裸条/空锚点/重复锚点三分类，只插入新行、绝不改动既有行）。",
+  "version": "0.4.0",
+  "description": "@a9i5k4/dsh-auto-memory 的增量插件（只做本体没有的两件事）：①把跨实例硬约束（cross/RULES.md）全文注入每一轮上下文，改一处即全部实例生效——本体的用户级记忆按实例隔离，这一层在它那里没有统一来源；②锚点结构修复工具 cross_memory_fix_bare_entries（无锚点裸条 / 空锚点 orphan / 重复锚点三分类，只插入新行、绝不改动既有行）——本体没有任何锚点结构修复通路。",
   "keywords": [
     "deepseek",
     "harness",
