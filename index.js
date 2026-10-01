@@ -15,7 +15,7 @@ import { readFileSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { composeAppendEntry, inspectNoteFile } from './entry-format.js'
+import { composeAppendEntry, inspectNoteFile, composeFixPlan, diagnoseBareEntries } from './entry-format.js'
 
 export const name = 'dsh-cross-memory'
 export const inject = ['systemPrompt', 'tools']
@@ -192,6 +192,98 @@ function buildWriteEntryToolDef(fsCtx) {
   }
 }
 
+/** 裸条修复工具（第 3 个工具）：检出并修复 A 类（无锚点裸条）与 B 类（空锚点）病灶。 */
+function buildFixBareEntriesToolDef(fsCtx) {
+  return {
+    name: 'cross_memory_fix_bare_entries',
+    description:
+      '检出并修复记忆笔记里的「裸条」：A 类＝无锚点裸条（append 通路产出 ⇒ 零注入贡献却实占容量）、B 类＝空锚点（orphan-anchor ⇒ 致整篇拒写）。' +
+      'scope=workspace（缺省）针对工作区笔记（memoryFile 必填）；scope=user 针对用户级 ~/.dsh/memory/MEMORY.md。' +
+      '默认预演（apply=false）只报病灶清单（类型/行号/拟插锚点 id/拟插位置）与改前改后结构指标，不落盘。' +
+      'apply=true 时逐条**只插入新行**（绝不改动既有行）→ 先留 .pre-write-* 基线 → 写后自检，仍有 A/B 病灶即从基线回滚。' +
+      'C 类（重复锚点）只检出、不自动改（留哪个 id 属语义判断）。' +
+      'A 类锚点 id 用确定性派生（scope + 文件名 + 首行前 60 字符）⇒ 同一裸条反复扫描得同一 id，幂等可核。',
+    parameters: {
+      type: 'object',
+      properties: {
+        scope: {
+          type: 'string',
+          enum: ['workspace', 'user'],
+          description: "落点：'workspace'（缺省）工作区笔记；'user' 用户级 ~/.dsh/memory/MEMORY.md",
+        },
+        memoryFile: { type: 'string', description: "目标工作区 MEMORY.md 的绝对路径；scope='user' 时忽略" },
+        apply: { type: 'boolean', description: 'false（缺省）= 只报方案；true = 真正落盘（写前留基线、写后自检）' },
+      },
+      required: [],
+    },
+    output: {
+      schema: { type: 'string' },
+      render(_args, value) {
+        return [{ type: 'text', text: String(value) }]
+      },
+    },
+    async execute(args) {
+      const scope = args?.scope === 'user' ? 'user' : 'workspace'
+      const memoryFile = scope === 'user' ? USER_MEMORY_PATH : String(args?.memoryFile || '')
+      if (!memoryFile) return JSON.stringify({ ok: false, reason: 'memory-file-required' }, null, 2)
+
+      let currentText
+      try {
+        currentText = readFileSync(memoryFile, 'utf8')
+      } catch (e) {
+        return JSON.stringify({ ok: false, reason: 'read-failed: ' + (e && e.message ? e.message : String(e)) }, null, 2)
+      }
+
+      const fileBasename = memoryFile.split(/[\\/]/).pop()
+      const plan = composeFixPlan({ fileText: currentText, scope, fileBasename })
+      if (!plan.ok) {
+        return JSON.stringify({ ok: false, blocked: true, scope, targetPath: memoryFile, reasons: plan.reasons }, null, 2)
+      }
+
+      const report = {
+        scope,
+        targetPath: memoryFile,
+        changed: plan.changed,
+        diagnostics: plan.diagnostics,
+        plan: plan.plan,
+        warnings: plan.warnings,
+        before: plan.before,
+        after: plan.after,
+      }
+
+      if (args?.apply !== true || !plan.changed) {
+        return JSON.stringify({ ok: true, dryRun: args?.apply !== true, ...report }, null, 2)
+      }
+
+      const stampText = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-')
+      const baselinePath = memoryFile + '.pre-write-' + stampText
+      try {
+        await fsCtx.fs.writeText(await fsCtx.fs.resolve(baselinePath), currentText)
+        await fsCtx.fs.writeText(await fsCtx.fs.resolve(memoryFile), plan.noteText)
+
+        // 写后自检：A/B 病灶必须清零，否则从基线回滚（红线：不 clean 即回滚）。
+        const recheck = diagnoseBareEntries(readFileSync(memoryFile, 'utf8'))
+        if (recheck.bareA.length || recheck.orphan.length) {
+          await fsCtx.fs.writeText(await fsCtx.fs.resolve(memoryFile), currentText)
+          return JSON.stringify(
+            { ok: false, reason: 'post-write-check-failed', rolledBack: true, recheck, baselinePath },
+            null,
+            2
+          )
+        }
+      } catch (e) {
+        return JSON.stringify(
+          { ok: false, reason: 'write-failed: ' + (e && e.message ? e.message : String(e)), ...report },
+          null,
+          2
+        )
+      }
+
+      return JSON.stringify({ ok: true, applied: true, baselinePath, ...report }, null, 2)
+    },
+  }
+}
+
 export function apply(ctx, config) {
   const enabled = config?.inject === true
   const disposers = []
@@ -248,9 +340,10 @@ export function apply(ctx, config) {
     })
   )
 
-  // 结构化写入：可选依赖 —— 宿主没挂 fs 后端时不注册该工具，本插件其余功能照常。
+  // 结构化写入与裸条修复：可选依赖 —— 宿主没挂 fs 后端时不注册这两个工具，本插件其余功能照常。
   ctx.inject(['fs'], (fsCtx) => {
     disposers.push(fsCtx.tools.register(buildWriteEntryToolDef(fsCtx)))
+    disposers.push(fsCtx.tools.register(buildFixBareEntriesToolDef(fsCtx)))
   })
 
   return () => {

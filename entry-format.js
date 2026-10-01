@@ -21,7 +21,7 @@
  *  - 正文里出现 `<!-- memory:`（带空格）会让该文件此后**永久拒写**：`lib/index.js:12066-12075`。
  */
 
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 
 /** 索引行上限（注入面 ruleSummaryPre 的硬编码 max）。 */
 export const INDEX_MAX_CHARS = 200
@@ -234,3 +234,184 @@ export function inspectNoteFile(fileText) {
     hasBOM: text.charCodeAt(0) === 0xfeff,
   }
 }
+
+/** 空锚点（B 类）修复时补入的中性占位行。**不改既有正文措辞**，只新增这一行。 */
+export const ORPHAN_PLACEHOLDER = '（空锚点占位）本条目暂无实质内容，保留锚点以维持条目边界。'
+
+/**
+ * 诊断「裸条」（对齐《交接-增量插件裸条检出与修复（2026-10-01）》§3，但**修正了 A 类判据的一处缺陷**）：
+ *
+ *  - **A 类 · 无锚点裸条**：在**最后一个锚点的覆盖区间**内、该锚点自带的正文块之外，仍出现 `^##\s` 行。
+ *    ⚠ 规格原文写「最后一个锚点之后出现 `## ` 行且**其前无锚点**」—— 按字面实现会把
+ *    「**紧跟在锚点行后的条目标题** `## <标题>`」误判成裸条（本机实测假阳性：项目笔记 L41、用户级 L145）。
+ *    **正解**：锚点后的**第一个非空行**若是 ATX 标题，视为该条目自带的标题并跳过；此后出现的 `## ` 行才是病灶。
+ *    只查最后一个锚点区间 —— 裸条恒由 `append` 追加到末尾，中间区段的 `## ` 无法与合法多级标题区分。
+ *  - **B 类 · 空锚点（orphan）**：锚点到下一锚点（或文件末）之间无任何非空行 ⇒ 真 `parseAnchors` 报 `orphan-anchor`。
+ *  - **C 类 · 重复锚点**：同一 `mem_<32hex>` 出现 ≥2 次 ⇒ `duplicate-anchor`。**只检出、不自动改**
+ *    （该留哪个 id 属语义判断，须人工确认）。
+ */
+export function diagnoseBareEntries(fileText) {
+  const lines = String(fileText == null ? '' : fileText).split(/\r?\n/)
+  const anchorAt = []
+  for (let i = 0; i < lines.length; i++) {
+    const m = ANCHOR_LINE_LOOSE_RE.exec(lines[i].trim())
+    if (m) anchorAt.push({ line: i, id: m[1] })
+  }
+  const isBlank = (i) => lines[i].trim() === ''
+  const isHeading = (i) => /^#{1,6}\s+\S/.test(lines[i].trim())
+
+  const bareA = []
+  if (anchorAt.length) {
+    const last = anchorAt[anchorAt.length - 1].line
+    let seenOwnHeading = false
+    let seenContent = false
+    for (let i = last + 1; i < lines.length; i++) {
+      if (isBlank(i)) continue
+      if (isHeading(i)) {
+        if (!seenContent && !seenOwnHeading) {
+          seenOwnHeading = true // 该锚点自带的条目标题 —— 跳过
+          continue
+        }
+        // 新块起点。幂等键取**该块的实质内容行**，而不是 `## <日期>` 行本身 ——
+        // 实测踩中：同一次 append 写入的多条裸条**标题相同**（都是 `## 2026-10-01`），
+        // 用标题派生 ⇒ 三条派生出同一个 id ⇒ 插完即刻 `duplicate-anchor`（探针 2a 抓到）。
+        let key = lines[i].trim()
+        for (let j = i + 1; j < lines.length; j++) {
+          const t = lines[j].trim()
+          if (t === '') continue
+          if (isHeading(j) || ANCHOR_LINE_LOOSE_RE.test(t)) break
+          key = t
+          break
+        }
+        bareA.push({ line: i + 1, heading: lines[i].trim(), key })
+        continue
+      }
+      seenContent = true
+    }
+  }
+
+  const orphan = []
+  for (let k = 0; k < anchorAt.length; k++) {
+    const s = anchorAt[k].line + 1
+    const e = k + 1 < anchorAt.length ? anchorAt[k + 1].line : lines.length
+    let has = false
+    for (let j = s; j < e; j++) {
+      if (!isBlank(j)) {
+        has = true
+        break
+      }
+    }
+    if (!has) orphan.push({ line: anchorAt[k].line + 1, id: anchorAt[k].id })
+  }
+
+  const byId = new Map()
+  for (const a of anchorAt) {
+    if (!byId.has(a.id)) byId.set(a.id, [])
+    byId.get(a.id).push(a.line + 1)
+  }
+  const duplicate = [...byId.entries()]
+    .filter(([, ls]) => ls.length > 1)
+    .map(([id, ls]) => ({ id, lines: ls }))
+
+  return {
+    lines: lines.length,
+    anchors: anchorAt.length,
+    bareA,
+    orphan,
+    duplicate,
+    clean: bareA.length === 0 && orphan.length === 0 && duplicate.length === 0,
+  }
+}
+
+/**
+ * 确定性锚点 id（**仅用于修复既有裸条**，使同一条裸条反复扫描得同一 id ⇒ 幂等可核）。
+ *
+ * `seed = scope + '\0' + 文件名`（如 `user\0MEMORY.md`）⇒ 跨落点、跨笔记不撞；
+ * `key = 该块**第一条实质内容行**前 60 字符`（**不是** `## <日期>` 行本身）⇒ 同文件内按内容稳定。
+ *   ⚠ 实测踩中：同日 append 的多条裸条标题都是 `## 2026-10-01`，用标题当 key 会派生出同一个 id，
+ *   插完即刻 `duplicate-anchor`（探针 2a 抓到）⇒ 必须取内容行。
+ *
+ * ⚠ 与新增条目用的 `newAnchorId`（随机 UUID）**刻意并存**：条目级真实契约是随机 id
+ * （`memory-anchor.js:40-41`、本文件 :60-66，后者注释逐字「禁止由内容派生」）；
+ * 这里用派生只为**修复的可复现性**；`parseAnchors` 只校验形态 `mem_[0-9a-f]{32}`，两者都收。
+ */
+export function deriveBareFixId(scope, fileBasename, firstLine) {
+  const seed = String(scope || 'workspace') + '\0' + String(fileBasename || 'MEMORY.md')
+  const key = String(firstLine == null ? '' : firstLine).trim().slice(0, 60)
+  return 'mem_' + createHash('sha256').update(seed + '\0' + key, 'utf8').digest('hex').slice(0, 32)
+}
+
+/**
+ * 拼装一次「裸条修复」的完整结果（纯函数，不落盘）。
+ *
+ * 修法：A 类在 `## ` 行**之前**插入锚点行；B 类在锚点行**之后**插入中性占位行。
+ * 两者统一成「在第 `insertAt` 行之前插入 `text`」，再**按 insertAt 从大到小**应用（避免行号漂移）。
+ * **绝不改动任何既有行** —— 只插入新行。
+ *
+ * @returns {{ok:true, diagnostics, plan, noteText:string|null, changed:boolean, warnings:string[], before, after}
+ *          |{ok:false, reasons:string[]}}
+ */
+export function composeFixPlan(input) {
+  const fileText = String(input?.fileText == null ? '' : input.fileText)
+  const scope = input?.scope === 'user' ? 'user' : 'workspace'
+  const fileBasename = String(input?.fileBasename || 'MEMORY.md')
+  const lines = fileText.split(/\r?\n/)
+  const diag = diagnoseBareEntries(fileText)
+
+  const existingIds = listAnchorIds(fileText)
+  const plan = []
+  for (const b of diag.bareA) {
+    const anchorId = deriveBareFixId(scope, fileBasename, b.key)
+    if (existingIds.includes(anchorId)) {
+      return { ok: false, reasons: ['derived-id-collision:' + anchorId] }
+    }
+    plan.push({
+      type: 'bare',
+      line: b.line,
+      heading: b.heading,
+      idKey: b.key.slice(0, 60),
+      anchorId,
+      insertAt: b.line,
+      text: anchorLineOf(anchorId),
+    })
+  }
+  for (const o of diag.orphan) {
+    plan.push({ type: 'orphan', line: o.line, anchorId: o.id, insertAt: o.line + 1, text: ORPHAN_PLACEHOLDER })
+  }
+
+  const warnings = []
+  if (diag.duplicate.length) {
+    warnings.push('duplicate-anchor-needs-manual-fix:' + diag.duplicate.map((d) => d.id).join(','))
+  }
+
+  if (plan.length === 0) {
+    return {
+      ok: true,
+      diagnostics: diag,
+      plan,
+      noteText: null,
+      changed: false,
+      warnings,
+      before: inspectNoteFile(fileText),
+      after: inspectNoteFile(fileText),
+    }
+  }
+
+  const out = lines.slice()
+  for (const item of [...plan].sort((a, b) => b.insertAt - a.insertAt)) {
+    out.splice(item.insertAt - 1, 0, item.text)
+  }
+  const noteText = out.join('\n')
+
+  return {
+    ok: true,
+    diagnostics: diag,
+    plan,
+    noteText,
+    changed: true,
+    warnings,
+    before: inspectNoteFile(fileText),
+    after: inspectNoteFile(noteText),
+  }
+}
+
