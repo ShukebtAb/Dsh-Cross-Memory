@@ -149,6 +149,8 @@ export function renderArchiveAppend({ title, body }) {
  * @param {string} [input.bodyText]      超长正文（外移到档案；留空则本条目为纯索引行）
  * @param {string} [input.archiveRelPath] 档案短路径（如 `handoff/archive-回流-20261001.md`）
  * @param {boolean} [input.requireConstraint] 是否强制约束语汇
+ * @param {string} [input.scope]         落点语义：`'workspace'`（缺省）或 `'user'`。
+ *   用户级笔记**没有** `handoff/` 落地目录 ⇒ `'user'` 时正文外移整条禁用（fail-closed，不静默忽略）。
  * @param {string} [input.idFactory]     测试注入的 32 位 hex
  * @returns {{ok:true, noteText:string, archiveAppend:string, memoryId:string, anchorLine:string, warnings:string[]}
  *          |{ok:false, reasons:string[]}}
@@ -162,6 +164,7 @@ export function composeAppendEntry(input) {
   const indexLine = input?.indexLine
   const bodyText = String(input?.bodyText == null ? '' : input.bodyText).trim()
   const archiveRelPath = String(input?.archiveRelPath == null ? '' : input.archiveRelPath).trim()
+  const scope = input?.scope === 'user' ? 'user' : 'workspace'
 
   const titleCheck = validateTitle(title)
   if (!titleCheck.ok) reasons.push(...titleCheck.reasons)
@@ -169,6 +172,10 @@ export function composeAppendEntry(input) {
   const indexCheck = validateIndexLine(indexLine, { requireConstraint: input?.requireConstraint === true })
   if (!indexCheck.ok) reasons.push(...indexCheck.reasons)
   warnings.push(...indexCheck.warnings)
+
+  // 用户级落点没有 `handoff/`：正文外移整条禁用（给它造一个落点就违反「不引入新的记忆落点」）。
+  // 索引行超长由 validateIndexLine 统一拦下，此处只拦「外移」这一条路径。
+  if (scope === 'user' && (bodyText || archiveRelPath)) reasons.push('user-scope-no-archive')
 
   // 正文外移时，档案短路径必须落在索引行里 —— 注入面只取首行，路径不在这行等于读不到。
   if (bodyText && !archiveRelPath) reasons.push('body-text-needs-archive-path')

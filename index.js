@@ -23,6 +23,12 @@ export const inject = ['systemPrompt', 'tools']
 /** 规则文件路径。刻意硬编码为共享位置——全部实例看同一份，这正是本插件的目的。 */
 const RULES_PATH = join(homedir(), '.dsh', 'memory', 'cross', 'RULES.md')
 
+/**
+ * 用户级笔记路径（`scope='user'` 的落点）。同样硬编码 —— 本插件**不新增配置键**。
+ * 用户级**没有** `handoff/` 落地目录，所以该落点下正文外移被 fail-closed 拒绝（见 entry-format.js）。
+ */
+const USER_MEMORY_PATH = join(homedir(), '.dsh', 'memory', 'MEMORY.md')
+
 const BEGIN = '<!-- cross:begin -->'
 const END = '<!-- cross:end -->'
 
@@ -89,21 +95,27 @@ function buildWriteEntryToolDef(fsCtx) {
   return {
     name: 'cross_memory_write_entry',
     description:
-      '把一条结构化条目写进工作区记忆笔记：自动分配锚点行、校验索引行 ≤200 字符、把超长正文外移到 handoff 档案并在索引行里留短路径指针。' +
+      '把一条结构化条目写进记忆笔记：自动分配锚点行、校验索引行 ≤200 字符、把超长正文外移到 handoff 档案并在索引行里留短路径指针。' +
+      'scope=workspace（缺省）写工作区笔记（memoryFile 必填）；scope=user 写用户级 ~/.dsh/memory/MEMORY.md（该落点无 handoff 目录 ⇒ 禁止 body/archivePath）。' +
       '默认预演（apply=false）只回改前/改后结构指标；apply=true 才落盘，落盘前强制生成 .pre-write-* 基线。' +
-      '写入前会 fail-closed 拒绝：锚点重复、保留语法污染（带空格的 <!-- memory:）、索引行超长、正文外移但指针不在索引行内。' +
+      '写入前会 fail-closed 拒绝：锚点重复、保留语法污染（带空格的 <!-- memory:）、索引行超长、正文外移但指针不在索引行内、user 落点带正文外移。' +
       '本工具不生成尾随空锚点 —— 那会被 auto-memory 的 parseAnchors 判 orphan-anchor 致整篇拒写。',
     parameters: {
       type: 'object',
       properties: {
-        memoryFile: { type: 'string', description: '目标工作区 MEMORY.md 的绝对路径' },
+        scope: {
+          type: 'string',
+          enum: ['workspace', 'user'],
+          description: "落点：'workspace'（缺省）工作区笔记；'user' 用户级 ~/.dsh/memory/MEMORY.md",
+        },
+        memoryFile: { type: 'string', description: "目标工作区 MEMORY.md 的绝对路径；scope='user' 时忽略" },
         title: { type: 'string', description: '条目标题（不带 # 前缀）' },
         indexLine: { type: 'string', description: '条目索引行；注入面只取它的前 200 字符，须自包含结论' },
         body: { type: 'string', description: '超长正文；给了就会外移到档案，此时 indexLine 内必须含该档案的短路径指针' },
         archivePath: { type: 'string', description: '档案绝对路径；body 非空时必填' },
         apply: { type: 'boolean', description: 'false（缺省）= 只预演；true = 真正落盘' },
       },
-      required: ['memoryFile', 'title', 'indexLine'],
+      required: ['title', 'indexLine'],
     },
     output: {
       schema: { type: 'string' },
@@ -112,7 +124,8 @@ function buildWriteEntryToolDef(fsCtx) {
       },
     },
     async execute(args) {
-      const memoryFile = String(args?.memoryFile || '')
+      const scope = args?.scope === 'user' ? 'user' : 'workspace'
+      const memoryFile = scope === 'user' ? USER_MEMORY_PATH : String(args?.memoryFile || '')
       if (!memoryFile) return JSON.stringify({ ok: false, reason: 'memory-file-required' }, null, 2)
 
       let currentText
@@ -129,12 +142,15 @@ function buildWriteEntryToolDef(fsCtx) {
         indexLine: args?.indexLine,
         bodyText: args?.body,
         archiveRelPath: archivePath ? 'handoff/' + archivePath.split(/[\\/]/).pop() : '',
+        scope,
       })
       if (!composed.ok) {
-        return JSON.stringify({ ok: false, blocked: true, reasons: composed.reasons }, null, 2)
+        return JSON.stringify({ ok: false, blocked: true, scope, targetPath: memoryFile, reasons: composed.reasons }, null, 2)
       }
 
       const report = {
+        scope,
+        targetPath: memoryFile,
         memoryId: composed.memoryId,
         warnings: composed.warnings,
         before: inspectNoteFile(currentText),
