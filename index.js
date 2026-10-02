@@ -15,7 +15,13 @@ import { readFileSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { composeAppendEntry, inspectNoteFile, composeFixPlan, diagnoseBareEntries } from './entry-format.js'
+import {
+  composeAppendEntry,
+  inspectNoteFile,
+  composeFixPlan,
+  diagnoseBareEntries,
+  countPendingNominations,
+} from './entry-format.js'
 
 export const name = 'dsh-cross-memory'
 export const inject = ['systemPrompt', 'tools']
@@ -28,6 +34,11 @@ const RULES_PATH = join(homedir(), '.dsh', 'memory', 'cross', 'RULES.md')
  * 用户级**没有** `handoff/` 落地目录，所以该落点下正文外移被 fail-closed 拒绝（见 entry-format.js）。
  */
 const USER_MEMORY_PATH = join(homedir(), '.dsh', 'memory', 'MEMORY.md')
+/**
+ * 用户级规则**提名区**路径（与 `RULES.md` 同目录）。本插件只**读**它，用于回答
+ * `cross_memory_status` 的 `nominationsPending` —— 不写、不改、不注入（改判依据见 H20261002-13）。
+ */
+const NOMINATIONS_PATH = join(homedir(), '.dsh', 'memory', 'cross', 'NOMINATIONS.md')
 
 const BEGIN = '<!-- cross:begin -->'
 const END = '<!-- cross:end -->'
@@ -37,6 +48,8 @@ const SECTION_ORDER = 10001
 
 /** mtime 缓存。`items` 存在即视为有效快照。 */
 let cache = { mtimeMs: null }
+/** NOMINATIONS.md 的 mtime 缓存。`pending` 为数字即视为有效快照。 */
+let nomCache = { mtimeMs: null }
 
 /**
  * 读取并解析规则文件。返回 `{ ok, reason }` 或
@@ -75,6 +88,34 @@ function loadRules() {
     items,
   }
   return cache
+}
+
+/**
+ * 读取提名区并数「待议」提名片数。与 loadRules 同样按 mtimeMs 缓存、绝不抛错。
+ * 解析失败返回 `{ ok:false, reason }` —— 调用方以 `null` 透出，**不伪装成 0**。
+ */
+function loadNominations() {
+  let st
+  try {
+    st = statSync(NOMINATIONS_PATH)
+  } catch {
+    return { ok: false, reason: 'nominations-not-found' }
+  }
+
+  if (nomCache.mtimeMs === st.mtimeMs && typeof nomCache.pending === 'number') return nomCache
+
+  let text
+  try {
+    text = readFileSync(NOMINATIONS_PATH, 'utf8')
+  } catch (e) {
+    return { ok: false, reason: 'read-failed: ' + (e && e.message ? e.message : String(e)) }
+  }
+
+  const r = countPendingNominations(text)
+  if (!r.ok) return r
+
+  nomCache = { ok: true, mtimeMs: st.mtimeMs, pending: r.pending }
+  return nomCache
 }
 
 /** 渲染注入正文；无内容时返回空串（DSH 侧据此判定不注入）。 */
@@ -319,6 +360,7 @@ export function apply(ctx, config) {
       },
       async execute() {
         const r = loadRules()
+        const nom = loadNominations()
         if (!r.ok) {
           return JSON.stringify({ rulesPath: RULES_PATH, ok: false, reason: r.reason }, null, 2)
         }
@@ -332,6 +374,7 @@ export function apply(ctx, config) {
             itemsParsed: r.items.length,
             injectEnabled: enabled,
             itemsInjected: enabled ? r.items.length : 0,
+            nominationsPending: nom.ok ? nom.pending : null,
           },
           null,
           2

@@ -414,4 +414,46 @@ export function composeFixPlan(input) {
     after: inspectNoteFile(noteText),
   }
 }
+/**
+ * 数 `cross/NOMINATIONS.md` 的「待议」提名片数（判据 N）。
+ *
+ * ★ 判据与 `count-nominations.mjs`（记忆中枢侧脚本）**逐条一致** —— 两侧是**同一判据的两份实现**，
+ *   不是同一份代码（插件零依赖，不能跨产物根 require 那个脚本）。任何改动都必须两处同改，
+ *   并用「同刻交叉验证」核一致性（见回执判据 2）。
+ *   - 表格行 = trim 后以 `|` 开头；
+ *   - 表头 = 第一条「非分隔行」的表格行；列索引一律**按列名取**，不写死列号；
+ *   - 数据行 = 表格行 − 表头 − 分隔行 − 重复表头（以 `| # |` 开头）；
+ *   - 真提名行 = 「提名日」列匹配 `^\d{4}-\d{2}-\d{2}$`（示例行与空行因此被排除）；
+ *   - N = 真提名行中「状态」列 === `待议` 的行数。
+ *
+ * 返回 `{ ok: true, pending }`；表头缺失/缺列 ⇒ `{ ok: false, reason }`。
+ * ★ **不得**把解析失败伪装成 0 —— 调用方须以 `null` 透出（读不到 ≠ 没有待议）。
+ */
+export function countPendingNominations(fileText) {
+  const lines = String(fileText).replace(/^\uFEFF/, '').split(/\r?\n/)
+  const isSep = (l) => /^\s*\|\s*-+/.test(l)
+  const tableLines = lines.filter((l) => l.trim().startsWith('|'))
+
+  const headerLine = tableLines.find((l) => !isSep(l))
+  if (!headerLine) return { ok: false, reason: 'nominations-no-header' }
+
+  const headerCells = headerLine.split('|').map((c) => c.trim())
+  const idxOf = (name) => headerCells.findIndex((c) => c === name)
+  const statusIdx = idxOf('状态')
+  const dateIdx = idxOf('提名日')
+  if (statusIdx < 0 || dateIdx < 0) {
+    return { ok: false, reason: `nominations-columns-missing(status=${statusIdx},date=${dateIdx})` }
+  }
+
+  let pending = 0
+  for (const l of tableLines) {
+    if (l === headerLine) continue
+    if (isSep(l)) continue
+    if (/^\s*\|\s*#\s*\|/.test(l)) continue
+    const cells = l.split('|').map((c) => c.trim())
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(cells[dateIdx] || '')) continue
+    if ((cells[statusIdx] || '') === '待议') pending += 1
+  }
+  return { ok: true, pending }
+}
 
